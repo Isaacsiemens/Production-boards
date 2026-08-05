@@ -1,0 +1,162 @@
+/**
+ * Production Tracking Board — API (Firebase Cloud Functions, v2)
+ *
+ * Nothing here runs until you deploy functions on the Blaze plan:
+ *     firebase deploy --only functions
+ *
+ * It works on the SAME data the board uses: a single Firestore document
+ * fleetview/state whose "json" field holds { boards: [...] } as a string.
+ *
+ * Fill in these settings (see README-API.txt for how):
+ *   SIEOPS_BASE_URL  the Sieops API base, e.g. https://sieops.example/api
+ *   WEBHOOK_URL      a Teams/Slack incoming webhook for red alerts
+ *   API_KEY          a shared key required on the HTTP API (x-api-key header)
+ */
+
+const { onRequest } = require("firebase-functions/v2/https");
+const { onSchedule } = require("firebase-functions/v2/scheduler");
+const { onDocumentWritten } = require("firebase-functions/v2/firestore");
+const admin = require("firebase-admin");
+
+admin.initializeApp();
+const db = admin.firestore();
+const STATE = db.collection("fleetview").doc("state");
+
+const SIEOPS_BASE_URL = process.env.SIEOPS_BASE_URL || "";
+const WEBHOOK_URL     = process.env.WEBHOOK_URL || "";
+const API_KEY         = process.env.API_KEY || "";
+
+const BLUE = "#3b82f6", RED = "#e5484d", COMPLETE = "#0b6b2e";
+
+// ---------- helpers ----------
+function uid() { return Math.random().toString(36).slice(2, 9); }
+
+async function loadState() {
+  const snap = await STATE.get();
+  if (!snap.exists) return { boards: [] };
+  const d = snap.data();
+  return d && d.json ? JSON.parse(d.json) : { boards: [] };
+}
+async function saveState(state) {
+  await STATE.set({ json: JSON.stringify(state), ts: Date.now() });
+}
+function findBoard(state, name) {
+  return state.boards.find(b => b.name && b.name.toLowerCase() === String(name || "").toLowerCase());
+}
+function newBoard(name) {
+  return {
+    id: uid(), name: name, notes: {}, jobs: [],
+    stations: ["Cutting", "Welding", "Paint", "Assembly", "QC", "Shipping"].map(n => ({ id: uid(), name: n })),
+    dateCols: [{ id: uid(), name: "Commitment Date" }]
+  };
+}
+// Upsert jobs into a board, matching by IP or catalog #.
+// IMPORTANT: never touch stationId / color / operator — the floor owns those.
+function upsertJobs(board, jobs) {
+  let created = 0, updated = 0;
+  jobs.forEach(j => {
+    const ip = j.ip || "";
+    const cat = j.orderno || j.catalog || "";
+    const dates = j.dates || (j.due ? { [board.dateCols[0].id]: j.due } : {});
+    let existing = board.jobs.find(x => (ip && x.ip === ip) || (cat && x.orderno === cat));
+    if (existing) {
+      if (j.customer != null) existing.customer = j.customer;
+      if (ip) existing.ip = ip;
+      if (cat) existing.orderno = cat;
+      if (j.qty != null) existing.qty = j.qty;
+      existing.dates = Object.assign(existing.dates || {}, dates);
+      updated++;
+    } else {
+      board.jobs.push({ id: uid(), customer: j.customer || "", ip: ip, orderno: cat, qty: j.qty || "", color: BLUE, stationId: "upnext", dates: dates, critical: false });
+      created++;
+    }
+  });
+  return { created, updated };
+}
+
+// ================= HTTP API =================
+// GET  /board        -> full board state (read endpoint for reporting)
+// POST /jobs         -> { board: "Line A", jobs: [{customer, ip, orderno, qty, dates|due}] }
+exports.api = onRequest({ cors: true }, async (req, res) => {
+  if (API_KEY && req.get("x-api-key") !== API_KEY) {
+    return res.status(401).json({ error: "unauthorized" });
+  }
+  try {
+    const path = (req.path || "/").replace(/\/+$/, "") || "/";
+    if (req.method === "GET" && (path === "/board" || path === "/")) {
+      return res.json(await loadState());
+    }
+    if (req.method === "POST" && path === "/jobs") {
+      const { board, jobs } = req.body || {};
+      if (!board || !Array.isArray(jobs)) return res.status(400).json({ error: "expected { board, jobs: [...] }" });
+      const state = await loadState();
+      let b = findBoard(state, board);
+      if (!b) { b = newBoard(board); state.boards.push(b); }
+      const r = upsertJobs(b, jobs);
+      await saveState(state);
+      return res.json({ ok: true, board: b.name, created: r.created, updated: r.updated });
+    }
+    return res.status(404).json({ error: "not found" });
+  } catch (e) {
+    console.error(e);
+    return res.status(500).json({ error: String(e) });
+  }
+});
+
+// ================= Inbound: pull jobs from Sieops (scheduled) =================
+exports.pullFromSieops = onSchedule("every 30 minutes", async () => {
+  if (!SIEOPS_BASE_URL) return;                       // not configured yet -> no-op
+  const resp = await fetch(SIEOPS_BASE_URL + "/jobs"); // <-- adjust to the real Sieops endpoint
+  const rows = await resp.json();
+  const state = await loadState();
+  rows.forEach(r => {
+    const boardName = r.line || "Line A";              // <-- map Sieops line/area field
+    let b = findBoard(state, boardName);
+    if (!b) { b = newBoard(boardName); state.boards.push(b); }
+    upsertJobs(b, [{
+      customer: r.customer, ip: r.ip, orderno: r.catalog, qty: r.qty,
+      dates: { [b.dateCols[0].id]: r.date }            // <-- map Sieops date field(s)
+    }]);
+  });
+  await saveState(state);
+});
+
+// ================= Daily backup of the board =================
+exports.dailyBackup = onSchedule("every day 02:00", async () => {
+  const snap = await STATE.get();
+  if (!snap.exists) return;
+  const stamp = new Date().toISOString().slice(0, 10);  // YYYY-MM-DD
+  await db.collection("backups").doc(stamp).set({ json: snap.data().json, at: Date.now() });
+});
+
+// ================= Outbound: alerts + push to Sieops on change =================
+exports.onBoardChange = onDocumentWritten("fleetview/state", async (event) => {
+  try {
+    const beforeDoc = event.data.before.exists ? JSON.parse(event.data.before.data().json || "{}") : { boards: [] };
+    const afterDoc  = event.data.after.exists  ? JSON.parse(event.data.after.data().json  || "{}") : { boards: [] };
+    const prevById = {};
+    (beforeDoc.boards || []).forEach(b => (b.jobs || []).forEach(j => { prevById[j.id] = j; }));
+
+    for (const b of (afterDoc.boards || [])) {
+      for (const j of (b.jobs || [])) {
+        const prev = prevById[j.id];
+        // Newly RED -> alert a Teams/Slack webhook
+        if (j.color === RED && (!prev || prev.color !== RED) && WEBHOOK_URL) {
+          await fetch(WEBHOOK_URL, {
+            method: "POST", headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ text: "Needs support: " + (j.customer || j.ip) + " on " + b.name + (j.note ? (" - " + j.note) : "") })
+          });
+        }
+        // Newly COMPLETE -> push production task back to Sieops
+        if (j.color === COMPLETE && (!prev || prev.color !== COMPLETE) && SIEOPS_BASE_URL) {
+          await fetch(SIEOPS_BASE_URL + "/tasks", {
+            method: "POST", headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ ip: j.ip, catalog: j.orderno, status: "complete", line: b.name, at: Date.now() })
+          });
+        }
+      }
+    }
+  } catch (e) {
+    console.error(e);
+  }
+});
