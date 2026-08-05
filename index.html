@@ -1,0 +1,61 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Production Tracking Board</title>
+<style>
+  :root{--bg:#0f1216;--panel:#171c22;--panel2:#1e242c;--line:#2b333d;--text:#eef2f6;--muted:#9aa7b4;--siemens:#009999;}
+  *{box-sizing:border-box}
+  html,body{margin:0;height:100%}
+  body{background:var(--bg);color:var(--text);font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Arial,sans-serif;display:flex;flex-direction:column;min-height:100%}
+  .brand{position:absolute;top:20px;right:26px;font-weight:800;letter-spacing:2px;color:var(--siemens);font-size:18px}
+  .wrap{flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;padding:40px 20px}
+  .magnets{display:flex;gap:10px;margin-bottom:22px}
+  .magnets span{width:26px;height:26px;border-radius:6px;box-shadow:0 2px 6px rgba(0,0,0,.4)}
+  h1{font-size:38px;margin:0 0 8px;text-align:center}
+  .sub{color:var(--muted);font-size:17px;margin:0 0 40px;text-align:center}
+  .cards{display:flex;gap:22px;flex-wrap:wrap;justify-content:center;width:100%;max-width:1120px}
+  a.card{flex:1;min-width:270px;max-width:360px;text-decoration:none;color:inherit;background:var(--panel);border:1px solid var(--line);border-radius:18px;padding:28px 26px;transition:border-color .15s, transform .15s;display:block}
+  a.card:hover{border-color:var(--siemens);transform:translateY(-3px)}
+  .dot{width:52px;height:52px;border-radius:13px;display:flex;align-items:center;justify-content:center;font-size:24px;margin-bottom:18px;font-weight:800}
+  .card h2{font-size:24px;margin:0 0 8px}
+  .card p{color:var(--muted);font-size:15px;line-height:1.5;margin:0 0 16px}
+  .go{color:var(--siemens);font-weight:800;font-size:15px}
+  footer{color:var(--muted);font-size:13px;text-align:center;padding:18px}
+  @media(max-width:680px){h1{font-size:30px}}
+</style>
+</head>
+<body>
+  <div class="brand">SIEMENS</div>
+  <div class="wrap">
+    <div class="magnets">
+      <span style="background:#3b82f6"></span><span style="background:#3fb84f"></span>
+      <span style="background:#f2c94c"></span><span style="background:#e5484d"></span><span style="background:#0b6b2e"></span>
+    </div>
+    <h1>Production Tracking Board</h1>
+    <p class="sub">Choose how you're using the board</p>
+
+    <div class="cards">
+      <a class="card" href="board.html">
+        <div class="dot" style="background:#1e2b3a;color:#7cc4ff;font-size:15px">MGR</div>
+        <h2>Manager Mode</h2>
+        <span class="go">Open the board &#8594;</span>
+      </a>
+
+      <a class="card" href="board.html?tablet">
+        <div class="dot" style="background:#11331e;color:#54d17f;font-size:15px">TAB</div>
+        <h2>Board Tablet</h2>
+        <span class="go">Open the tablet &#8594;</span>
+      </a>
+
+      <a class="card" href="board.html?tv">
+        <div class="dot" style="background:#2a2140;color:#c792ea;font-size:15px">TV</div>
+        <h2>TV Display</h2>
+        <span class="go">Open TV view &#8594;</span>
+      </a>
+    </div>
+  </div>
+  <footer>tracking-boards.web.app</footer>
+</body>
+</html>
